@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Giao Dịch Vàng Thủ Công</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body { font-family: Arial, sans-serif; background: #f8f9fa; padding: 20px; }
+.container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+h1 { color: #d4af37; text-align: center; }
+button { background: #d4af37; color: #222; border: none; padding: 10px 15px; margin: 5px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+button:hover { background: #e8c94d; }
+button.danger { background: #f6465d; color: white; }
+button.danger:hover { background: #ff6b81; }
+button.close-single { background: #ff9500; color: white; margin-left: 5px; }
+button.close-single:hover { background: #ffad33; }
+input, select { padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; }
+.trade-box { border-left: 5px solid #d4af37; padding: 10px; margin-top: 10px; border-radius: 6px; background: #fafafa; }
+.trade-box.sell { border-left-color: #f6465d; }
+.profit { color: #0ecb81; font-weight: bold; }
+.loss { color: #f6465d; font-weight: bold; }
+.price-display { text-align: center; font-size: 24px; color: #d4af37; margin: 20px 0; }
+#historyList { max-height: 250px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; padding: 10px; }
+.history-item { border-bottom: 1px solid #eee; padding: 5px 0; }
+.sound-box { margin-top: 15px; background: #fafafa; border-radius: 6px; padding: 10px; border: 1px solid #ddd; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>💰 Giao Dịch Vàng Thủ Công (XAU/USD)</h1>
+
+<div class="price-display">Giá hiện tại: <span id="currentPrice">0.00</span></div>
+
+<div>
+  <label>Số dư: </label><span id="balanceText">1000.00</span> USD<br>
+  <label>Đòn bẩy: </label><input type="number" id="leverage" value="10" min="1" max="100">
+  <label>Lot: </label><input type="number" id="lotSize" value="0.1" step="0.01" min="0.01"><br>
+  <label>Stop Loss (USD): </label><input type="number" id="stopLoss" value="50">
+  <label>Take Profit (USD): </label><input type="number" id="takeProfit" value="65">
+</div>
+
+<div style="margin-top:10px;">
+  <button onclick="openTrade('BUY')">🟩 Mở Lệnh BUY</button>
+  <button class="danger" onclick="openTrade('SELL')">🟥 Mở Lệnh SELL</button>
+  <button onclick="closeAllTrades()">❌ Đóng Tất Cả</button>
+  <button class="danger" onclick="resetData()">🔄 Reset Dữ Liệu</button>
+</div>
+
+<div class="sound-box">
+  <h3>🎵 Âm Thanh Thông Báo</h3>
+  <label>Chọn file âm thanh:</label>
+  <input type="file" id="soundFile" accept=".mp3">
+</div>
+
+<h3>📊 Lệnh Đang Mở</h3>
+<div id="activeTrades"></div>
+
+<h3>🕒 Lịch Sử</h3>
+<div id="historyList"></div>
+</div>
+
+<script>
+const FINNHUB_API_KEY = 'd1l6t99r01qt4thebangd1l6t99r01qt4thebao0';
+let ws, currentPrice = 0;
+let trades = JSON.parse(localStorage.getItem('manualTrades')) || [];
+let balance = parseFloat(localStorage.getItem('manualBalance')) || 1000;
+let userSound = null;
+let lastPriceTime = null, priceStagnantPlayed = false;
+
+document.getElementById('balanceText').textContent = balance.toFixed(2);
+
+// Kết nối Finnhub WebSocket
+function connectPrice() {
+  ws = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
+  ws.onopen = ()=> ws.send(JSON.stringify({type:'subscribe',symbol:'OANDA:XAU_USD'}));
+  ws.onmessage = e => {
+    const data = JSON.parse(e.data);
+    if(data.type==='trade'){ 
+      const p = data.data[data.data.length-1].p;
+      currentPrice = p;
+      document.getElementById('currentPrice').textContent = p.toFixed(2);
+      lastPriceTime = Date.now();
+      checkTrades();
+      renderTrades(); // Cập nhật lời/lỗ theo giá hiện tại
+    }
+  };
+  ws.onclose = ()=> setTimeout(connectPrice,3000);
+}
+connectPrice();
+
+// Tính toán lời/lỗ hiện tại
+function calculateCurrentProfit(trade) {
+  if (trade.closed) return trade.profit;
+  
+  if (trade.type === 'BUY') {
+    return (currentPrice - trade.entry) * trade.lot * trade.lev;
+  } else {
+    return (trade.entry - currentPrice) * trade.lot * trade.lev;
+  }
+}
+
+// Mở lệnh
+function openTrade(type){
+  if(!currentPrice) return alert("Chưa có giá.");
+  const lot = parseFloat(document.getElementById('lotSize').value);
+  const lev = parseFloat(document.getElementById('leverage').value);
+  const slAmount = parseFloat(document.getElementById('stopLoss').value);
+  const tpAmount = parseFloat(document.getElementById('takeProfit').value);
+  const entry = currentPrice;
+  
+  // Tính SL và TP theo giá (từ USD)
+  const stopLoss = type === 'BUY' ? entry - slAmount : entry + slAmount;
+  const takeProfit = type === 'BUY' ? entry + tpAmount : entry - tpAmount;
+  
+  const trade = {
+    id: Date.now(),
+    type,
+    entry,
+    stopLoss,
+    takeProfit,
+    slAmount, // Lưu giá trị USD để sửa sau này
+    tpAmount, // Lưu giá trị USD để sửa sau này
+    lot, 
+    lev, 
+    openTime: new Date().toLocaleString('vi-VN'), 
+    closed: false
+  };
+  
+  trades.push(trade);
+  saveData();
+  renderTrades();
+  playSound();
+  addHistory(`Mở ${type} @ ${entry.toFixed(2)} | SL:${slAmount}USD | TP:${tpAmount}USD`);
+}
+
+// Đóng lệnh
+function closeTrade(trade, reason){
+  const closePrice = currentPrice;
+  const profit = calculateCurrentProfit(trade);
+  balance += profit;
+  trade.closed = true;
+  trade.closePrice = closePrice;
+  trade.closeTime = new Date().toLocaleString('vi-VN');
+  trade.reason = reason;
+  trade.profit = profit;
+  playSound();
+  addHistory(`Đóng ${trade.type} @ ${closePrice.toFixed(2)} (${reason}) | <span class="${profit>=0?'profit':'loss'}">${profit.toFixed(2)} USD</span>`);
+  saveData();
+  renderTrades();
+}
+
+// Đóng từng lệnh thủ công
+function closeSingleTrade(id){
+  const trade = trades.find(t => t.id === id && !t.closed);
+  if(!trade) return;
+  closeTrade(trade, 'Đóng thủ công');
+}
+
+// Kiểm tra SL/TP
+function checkTrades(){
+  trades.filter(t=>!t.closed).forEach(t=>{
+    if(t.type==='BUY' && (currentPrice<=t.stopLoss || currentPrice>=t.takeProfit)){
+      closeTrade(t, currentPrice<=t.stopLoss?'STOP LOSS':'TAKE PROFIT');
+    }
+    if(t.type==='SELL' && (currentPrice>=t.stopLoss || currentPrice<=t.takeProfit)){
+      closeTrade(t, currentPrice>=t.stopLoss?'STOP LOSS':'TAKE PROFIT');
+    }
+  });
+  checkPriceStill();
+}
+
+// Cảnh báo giá đứng im
+function checkPriceStill(){
+  if(!lastPriceTime) return;
+  if(Date.now()-lastPriceTime>15000 && !priceStagnantPlayed){
+    playSound(); addHistory("⚠️ Giá không đổi 15s!");
+    priceStagnantPlayed = true;
+  }else if(Date.now()-lastPriceTime<=15000){
+    priceStagnantPlayed=false;
+  }
+}
+
+// Sửa SL/TP theo USD
+function editTrade(id){
+  const t = trades.find(x=>x.id===id);
+  if(!t) return;
+  
+  const slAmount = parseFloat(prompt("Nhập StopLoss mới (USD):", t.slAmount || Math.abs(t.entry - t.stopLoss)));
+  const tpAmount = parseFloat(prompt("Nhập TakeProfit mới (USD):", t.tpAmount || Math.abs(t.entry - t.takeProfit)));
+  
+  if(!isNaN(slAmount)) {
+    t.slAmount = slAmount;
+    t.stopLoss = t.type === 'BUY' ? t.entry - slAmount : t.entry + slAmount;
+  }
+  if(!isNaN(tpAmount)) {
+    t.tpAmount = tpAmount;
+    t.takeProfit = t.type === 'BUY' ? t.entry + tpAmount : t.entry - tpAmount;
+  }
+  
+  saveData(); 
+  renderTrades();
+  addHistory(`Sửa lệnh ${t.type}: SL ${slAmount}USD, TP ${tpAmount}USD`);
+}
+
+// Đóng tất cả
+function closeAllTrades(){
+  trades.filter(t=>!t.closed).forEach(t=>closeTrade(t,'Đóng tay'));
+}
+
+// Reset
+function resetData(){
+  if(!confirm("Xóa tất cả dữ liệu?")) return;
+  trades=[]; balance=1000;
+  saveData(); renderTrades();
+  document.getElementById('historyList').innerHTML="";
+  addHistory("🔄 Reset dữ liệu.");
+}
+
+// Lưu + render
+function saveData(){
+  localStorage.setItem('manualTrades', JSON.stringify(trades));
+  localStorage.setItem('manualBalance', balance);
+  document.getElementById('balanceText').textContent = balance.toFixed(2);
+}
+
+function renderTrades(){
+  const box = document.getElementById('activeTrades');
+  box.innerHTML="";
+  
+  trades.forEach(t=>{
+    const currentProfit = calculateCurrentProfit(t);
+    const div=document.createElement('div');
+    div.className="trade-box "+(t.type==='SELL'?'sell':'');
+    
+    if(t.closed) {
+      div.innerHTML=`
+        <b>${t.type}</b> @ ${t.entry.toFixed(2)} 
+        | Đóng @ ${t.closePrice.toFixed(2)}<br>
+        <span class="${t.profit>=0?'profit':'loss'}">${t.profit.toFixed(2)} USD</span> (${t.reason})
+      `;
+    } else {
+      div.innerHTML=`
+        <b>${t.type}</b> @ ${t.entry.toFixed(2)} 
+        | SL:${t.stopLoss.toFixed(2)} (${t.slAmount}USD) | TP:${t.takeProfit.toFixed(2)} (${t.tpAmount}USD)<br>
+        Lời/Lỗ hiện tại: <span class="${currentProfit>=0?'profit':'loss'}">${currentProfit.toFixed(2)} USD</span><br>
+        <button onclick="editTrade(${t.id})">✏️ Sửa SL/TP</button>
+        <button class="close-single" onclick="closeSingleTrade(${t.id})">🔴 Đóng Lệnh</button>
+      `;
+    }
+    box.appendChild(div);
+  });
+}
+renderTrades();
+
+// Lịch sử
+function addHistory(msg){
+  const h=document.getElementById('historyList');
+  const div=document.createElement('div');
+  div.className="history-item";
+  div.innerHTML=`${new Date().toLocaleTimeString('vi-VN')} - ${msg}`;
+  h.prepend(div);
+}
+
+// Âm thanh
+document.getElementById('soundFile').addEventListener('change',e=>{
+  const f=e.target.files[0];
+  if(f){ userSound=new Audio(URL.createObjectURL(f)); addHistory("🎵 Đã chọn âm thanh."); }
+});
+function playSound(){ if(userSound){ userSound.currentTime=0; userSound.play().catch(()=>{}); } }
+
+setInterval(checkPriceStill, 2000);
+</script>
+</body>
+</html>
