@@ -24,6 +24,7 @@ input, select { padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; }
 #historyList { max-height: 250px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; padding: 10px; }
 .history-item { border-bottom: 1px solid #eee; padding: 5px 0; }
 .sound-box { margin-top: 15px; background: #fafafa; border-radius: 6px; padding: 10px; border: 1px solid #ddd; }
+.empty-message { color: #666; font-style: italic; text-align: center; padding: 20px; }
 </style>
 </head>
 <body>
@@ -56,7 +57,7 @@ input, select { padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; }
 <h3>📊 Lệnh Đang Mở</h3>
 <div id="activeTrades"></div>
 
-<h3>🕒 Lịch Sử</h3>
+<h3>🕒 Lịch Sử Giao Dịch</h3>
 <div id="historyList"></div>
 </div>
 
@@ -228,26 +229,27 @@ function renderTrades(){
   const box = document.getElementById('activeTrades');
   box.innerHTML="";
   
-  trades.forEach(t=>{
+  // Chỉ hiển thị các lệnh chưa đóng
+  const activeTrades = trades.filter(t => !t.closed);
+  
+  if (activeTrades.length === 0) {
+    box.innerHTML = '<div class="empty-message">Không có lệnh nào đang mở</div>';
+    return;
+  }
+  
+  activeTrades.forEach(t=>{
     const currentProfit = calculateCurrentProfit(t);
     const div=document.createElement('div');
     div.className="trade-box "+(t.type==='SELL'?'sell':'');
     
-    if(t.closed) {
-      div.innerHTML=`
-        <b>${t.type}</b> @ ${t.entry.toFixed(2)} 
-        | Đóng @ ${t.closePrice.toFixed(2)}<br>
-        <span class="${t.profit>=0?'profit':'loss'}">${t.profit.toFixed(2)} USD</span> (${t.reason})
-      `;
-    } else {
-      div.innerHTML=`
-        <b>${t.type}</b> @ ${t.entry.toFixed(2)} 
-        | SL:${t.stopLoss.toFixed(2)} (${t.slAmount}USD) | TP:${t.takeProfit.toFixed(2)} (${t.tpAmount}USD)<br>
-        Lời/Lỗ hiện tại: <span class="${currentProfit>=0?'profit':'loss'}">${currentProfit.toFixed(2)} USD</span><br>
-        <button onclick="editTrade(${t.id})">✏️ Sửa SL/TP</button>
-        <button class="close-single" onclick="closeSingleTrade(${t.id})">🔴 Đóng Lệnh</button>
-      `;
-    }
+    div.innerHTML=`
+      <b>${t.type}</b> @ ${t.entry.toFixed(2)} 
+      | SL:${t.stopLoss.toFixed(2)} (${t.slAmount}USD) | TP:${t.takeProfit.toFixed(2)} (${t.tpAmount}USD)<br>
+      Lời/Lỗ hiện tại: <span class="${currentProfit>=0?'profit':'loss'}">${currentProfit.toFixed(2)} USD</span><br>
+      <button onclick="editTrade(${t.id})">✏️ Sửa SL/TP</button>
+      <button class="close-single" onclick="closeSingleTrade(${t.id})">🔴 Đóng Lệnh</button>
+    `;
+    
     box.appendChild(div);
   });
 }
